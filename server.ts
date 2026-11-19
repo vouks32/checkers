@@ -3,6 +3,7 @@ import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GameStore } from './src/server/gameStore.ts';
 import type { GameSessionView, PlayerColor } from './src/types/game.ts';
@@ -10,7 +11,9 @@ import type { GameSessionView, PlayerColor } from './src/types/game.ts';
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
 
-const store = new GameStore();
+const store = new GameStore(process.env.VERCEL ? null : undefined);
+const app = express();
+app.use(express.json({ limit: '256kb' }));
 
 interface RoomClient {
   ws: WebSocket;
@@ -32,10 +35,7 @@ function broadcastGameState(gameId: string, view: GameSessionView): void {
   }
 }
 
-async function startServer(): Promise<void> {
-  const app = express();
-  app.use(express.json({ limit: '256kb' }));
-
+function registerApiRoutes(): void {
   // Healthcheck
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, service: 'dames-master' });
@@ -162,11 +162,14 @@ async function startServer(): Promise<void> {
     broadcastGameState(req.params.id, result.view);
     res.json(result);
   });
+}
 
-  const server = http.createServer(app);
+registerApiRoutes();
+export const server = http.createServer(app);
 
+function registerWebSocketRoutes(): void {
   // WebSocket pour la synchronisation temps réel et la présence
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ server, path: '/api/ws' });
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '/ws', `http://${req.headers.host || 'localhost'}`);
@@ -240,7 +243,11 @@ async function startServer(): Promise<void> {
       }
     });
   });
+}
 
+registerWebSocketRoutes();
+
+async function startServer(): Promise<void> {
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -254,7 +261,7 @@ async function startServer(): Promise<void> {
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('/{*splat}', (_req, res) => {
+    app.get('*', (_req, res) => {
       const indexFile = path.join(distDir, 'index.html');
       if (fs.existsSync(indexFile)) {
         res.sendFile(indexFile);
@@ -269,7 +276,9 @@ async function startServer(): Promise<void> {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal server startup error:', err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  startServer().catch((err) => {
+    console.error('Fatal server startup error:', err);
+    process.exit(1);
+  });
+}

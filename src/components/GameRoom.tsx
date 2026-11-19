@@ -193,7 +193,7 @@ export const GameRoom: React.FC<GameRoomProps> = ({
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const tokenParam = seat?.seatToken ? `&seatToken=${encodeURIComponent(seat.seatToken)}` : '';
-      const wsUrl = `${protocol}//${window.location.host}/ws?gameId=${encodeURIComponent(gameId)}${tokenParam}`;
+      const wsUrl = `${protocol}//${window.location.host}/api/ws?gameId=${encodeURIComponent(gameId)}${tokenParam}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 

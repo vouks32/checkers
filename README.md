@@ -2,19 +2,27 @@
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
 
-# Run and deploy your AI Studio app
+# Dames Master
 
-This contains everything you need to run your app locally.
+Application de dames internationales multijoueur, avec mode d'analyse pédagogique.
 
-View your app in AI Studio: https://ai.studio/apps/f5858dd1-6a8c-48f5-8ea0-1caa143f56d5
-
-## Run Locally
+## Lancer en local
 
 **Prerequisites:**  Node.js
 
+1. Installer les dépendances avec `bun install` ou `npm install`.
+2. Lancer l'application avec `bun run dev` ou `npm run dev`.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Déployer sur Vercel
+
+Importer le dépôt dans Vercel avec le framework **Vite**. Les commandes de build
+et le dossier de sortie sont détectés automatiquement (`npm run build`, `dist`).
+Le fichier `api/[...path].ts` expose les routes `/api/*` et le WebSocket du jeu
+comme une seule Vercel Function. `vercel.json` redirige les liens `/game/:id`
+vers l'application et `/ws` vers le point d'entrée WebSocket.
+
+Activer **Fluid Compute** dans les paramètres Functions du projet Vercel pour
+autoriser les WebSockets. Le serveur de jeu garde son état en mémoire; les
+parties peuvent donc être perdues lors d'un redémarrage ou d'un changement
+d'instance. Une persistance partagée est nécessaire pour garantir la continuité
+des parties en production.
