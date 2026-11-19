@@ -1,0 +1,6 @@
+{
+  "name": "Dames Master",
+  "description": "Application multijoueur temps réel de dames internationales avec mode analyse pédagogique, flèches, surbrillance de coordonnées et simulation de coups.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

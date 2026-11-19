@@ -1,0 +1,214 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Filet de sécurité global par défaut
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'pseudo', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'pseudo', 'email', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.pseudo is string && data.pseudo.size() >= 1 && data.pseudo.size() <= 40
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPieceList(pieces) {
+      return pieces is list
+        && pieces.size() <= 40
+        && (pieces.size() == 0 || (pieces[0] is string && pieces[0].size() >= 4 && pieces[0].size() <= 10));
+    }
+
+    function isValidGameRecord(data, gameId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'whitePseudo', 'blackPseudo', 'status', 'turn',
+          'winner', 'version', 'pieces', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'whitePseudo', 'blackPseudo', 'status', 'turn',
+          'winner', 'version', 'pieces', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == gameId && isValidId(data.id)
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
+        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
+        && data.whitePseudo is string && data.whitePseudo.size() <= 40
+        && data.blackPseudo is string && data.blackPseudo.size() <= 40
+        && data.status in ['waiting', 'confirming', 'playing', 'finished']
+        && data.turn in ['white', 'black']
+        && data.winner in ['none', 'white', 'black', 'draw']
+        && data.version is int && data.version >= 0
+        && isValidPieceList(data.pieces)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isGameParticipant(gameData) {
+      return isSignedIn() && (
+        gameData.ownerId == request.auth.uid
+        || gameData.whitePlayerUid == request.auth.uid
+        || gameData.blackPlayerUid == request.auth.uid
+      );
+    }
+
+    function isValidMoveRecord(data, gameId) {
+      return data.keys().hasAll([
+          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'ply', 'color', 'from', 'to', 'promoted', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'ply', 'color', 'from', 'to', 'promoted', 'createdAt'
+        ])
+        && data.gameId is string && data.gameId == gameId && isValidId(data.gameId)
+        && data.authorUid is string && data.authorUid == request.auth.uid && isValidId(data.authorUid)
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
+        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
+        && data.ply is int && data.ply >= 1
+        && data.color in ['white', 'black']
+        && data.from is string && data.from.size() >= 2 && data.from.size() <= 3 && data.from.matches('^[A-J](10|[1-9])$')
+        && data.to is string && data.to.size() >= 2 && data.to.size() <= 3 && data.to.matches('^[A-J](10|[1-9])$')
+        && data.promoted is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAnnotationRecord(data, gameId) {
+      return data.keys().hasAll([
+          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'noteText', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
+          'noteText', 'updatedAt'
+        ])
+        && data.gameId is string && data.gameId == gameId && isValidId(data.gameId)
+        && data.authorUid is string && data.authorUid == request.auth.uid && isValidId(data.authorUid)
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
+        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
+        && data.noteText is string && data.noteText.size() <= 500
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['pseudo', 'updatedAt'])
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /games/{gameId} {
+      allow get: if isValidId(gameId) && isGameParticipant(existing());
+      allow list: if isSignedIn() && isGameParticipant(existing());
+      allow create: if isValidId(gameId)
+        && isSignedIn()
+        && isValidGameRecord(incoming(), gameId)
+        && incoming().ownerId == request.auth.uid
+        && (incoming().whitePlayerUid == request.auth.uid || incoming().blackPlayerUid == request.auth.uid)
+        && incoming().status == 'waiting'
+        && incoming().winner == 'none'
+        && incoming().version == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(gameId)
+        && isSignedIn()
+        && isValidGameRecord(incoming(), gameId)
+        && existing().status != 'finished'
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().version == existing().version + 1
+        && (
+          // Action 1: Rejoindre un siège vacant sans écraser un siège occupé
+          (
+            existing().status == 'waiting'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['whitePlayerUid', 'blackPlayerUid', 'whitePseudo', 'blackPseudo', 'status', 'version', 'updatedAt'])
+            && (
+              (existing().whitePlayerUid == '' && incoming().whitePlayerUid == request.auth.uid && incoming().blackPlayerUid == existing().blackPlayerUid)
+              || (existing().blackPlayerUid == '' && incoming().blackPlayerUid == request.auth.uid && incoming().whitePlayerUid == existing().whitePlayerUid)
+            )
+          )
+          ||
+          // Action 2: Coup ou mise à jour d'état par un participant
+          (
+            isGameParticipant(existing())
+            && incoming().whitePlayerUid == existing().whitePlayerUid
+            && incoming().blackPlayerUid == existing().blackPlayerUid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'turn', 'winner', 'version', 'pieces', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+
+      match /moves/{moveId} {
+        allow get: if isValidId(gameId) && isValidId(moveId)
+          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
+        allow list: if isGameParticipant(existing());
+        allow create: if isValidId(gameId) && isValidId(moveId)
+          && isSignedIn()
+          && isValidMoveRecord(incoming(), gameId)
+          && incoming().createdAt == request.time
+          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data)
+          && incoming().ownerId == get(/databases/$(database)/documents/games/$(gameId)).data.ownerId
+          && incoming().whitePlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.whitePlayerUid
+          && incoming().blackPlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.blackPlayerUid
+          && existsAfter(/databases/$(database)/documents/games/$(gameId));
+        allow update, delete: if false;
+      }
+
+      match /annotations/{annotationId} {
+        allow get: if isValidId(gameId) && isValidId(annotationId)
+          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
+        allow list: if isGameParticipant(existing());
+        allow create, update: if isValidId(gameId) && isValidId(annotationId)
+          && isSignedIn()
+          && isValidAnnotationRecord(incoming(), gameId)
+          && incoming().updatedAt == request.time
+          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data)
+          && incoming().ownerId == get(/databases/$(database)/documents/games/$(gameId)).data.ownerId
+          && incoming().whitePlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.whitePlayerUid
+          && incoming().blackPlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.blackPlayerUid;
+        allow delete: if isValidId(gameId) && isValidId(annotationId)
+          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
+      }
+    }
+  }
+}
