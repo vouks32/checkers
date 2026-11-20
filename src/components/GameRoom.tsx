@@ -113,6 +113,7 @@ export const GameRoom: React.FC<GameRoomProps> = ({
 
   // Interactions plateau
   const [selectedPath, setSelectedPath] = useState<Coord[]>([]);
+  const [movePending, setMovePending] = useState(false);
   const [previewPly, setPreviewPly] = useState<number | null>(null);
 
   // Mode analyse pédagogique
@@ -129,6 +130,7 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   const [muted, setMuted] = useState(() => getSoundMuted());
 
   const prevPlyRef = useRef<number>(0);
+  const movePendingRef = useRef(false);
 
   const inviteUrl =
     typeof window !== 'undefined' ? `${window.location.origin}/game/${gameId}` : `/game/${gameId}`;
@@ -242,6 +244,7 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   }, [view, activeEngine, previewPly, isSimulationActive, myColor]);
 
   const canPlayOnBoard =
+    !movePending &&
     !isSpectator &&
     previewPly === null &&
     !analysisMode &&
@@ -303,15 +306,42 @@ export const GameRoom: React.FC<GameRoomProps> = ({
 
   const submitBoardMove = useCallback(
     async (movePath: Coord[]) => {
-      if (!view || !seat?.seatToken || movePath.length < 2) return;
+      if (movePendingRef.current || !view || !seat?.seatToken || movePath.length < 2) return;
+      movePendingRef.current = true;
+      setMovePending(true);
       const from = movePath[0];
       const to = movePath[movePath.length - 1];
       setErrorMsg(null);
 
-      if (isSimulationActive) {
+      try {
+        if (isSimulationActive) {
+          try {
+            const result = await updateSimulation(gameId, seat.seatToken, {
+              type: 'move',
+              from,
+              to,
+              path: movePath,
+            });
+            if (result.ok) {
+              setView(result.view);
+              setSelectedPath([]);
+              playMoveSound();
+            } else {
+              setErrorMsg(result.error);
+              setSelectedPath([]);
+            }
+          } catch {
+            setErrorMsg('Impossible de modifier la simulation. Vérifiez les règles Firestore.');
+            setSelectedPath([]);
+          }
+          return;
+        }
+
         try {
-          const result = await updateSimulation(gameId, seat.seatToken, {
-            type: 'move',
+          const result = await submitMove({
+            gameId,
+            seatToken: seat.seatToken,
+            expectedVersion: view.version,
             from,
             to,
             path: movePath,
@@ -319,42 +349,22 @@ export const GameRoom: React.FC<GameRoomProps> = ({
           if (result.ok) {
             setView(result.view);
             setSelectedPath([]);
-            playMoveSound();
+            prevPlyRef.current = result.view.engine.ply;
+            if (result.move?.promoted) playPromoteSound();
+            else if (result.move?.captured?.length > 0) playCaptureSound();
+            else playMoveSound();
           } else {
-            setErrorMsg(result.error);
+            setErrorMsg(result.error || 'Coup refusé.');
+            if (result.view) setView(result.view);
             setSelectedPath([]);
           }
         } catch {
-          setErrorMsg('Impossible de modifier la simulation. Vérifiez les règles Firestore.');
+          setErrorMsg('Impossible d’enregistrer le coup. Vérifiez les règles Firestore.');
           setSelectedPath([]);
         }
-        return;
-      }
-
-      try {
-        const result = await submitMove({
-          gameId,
-          seatToken: seat.seatToken,
-          expectedVersion: view.version,
-          from,
-          to,
-          path: movePath,
-        });
-        if (result.ok) {
-          setView(result.view);
-          setSelectedPath([]);
-          prevPlyRef.current = result.view.engine.ply;
-          if (result.move?.promoted) playPromoteSound();
-          else if (result.move?.captured?.length > 0) playCaptureSound();
-          else playMoveSound();
-        } else {
-          setErrorMsg(result.error || 'Coup refusé.');
-          if (result.view) setView(result.view);
-          setSelectedPath([]);
-        }
-      } catch {
-        setErrorMsg('Impossible d’enregistrer le coup. Vérifiez les règles Firestore.');
-        setSelectedPath([]);
+      } finally {
+        movePendingRef.current = false;
+        setMovePending(false);
       }
     },
     [view, seat?.seatToken, gameId, isSimulationActive],
@@ -391,6 +401,7 @@ export const GameRoom: React.FC<GameRoomProps> = ({
 
   const handleSquareClick = useCallback(
     (coord: Coord) => {
+      if (movePendingRef.current) return;
       if (!view) return;
 
       // 1. Mode analyse pédagogique (jamais de modification de la partie réelle)
