@@ -22,7 +22,6 @@ import {
   getLegalMoves,
   isDarkCoord,
 } from '../engine/draughts.ts';
-import { mirrorGameToFirestore } from '../firebase.ts';
 import type {
   AnnotationColor,
   ClientSeatInfo,
@@ -149,12 +148,14 @@ export const GameRoom: React.FC<GameRoomProps> = ({
             return;
           }
           const data = await res.json();
+          if (!res.ok && res.status >= 500) {
+            throw new Error(data.error || 'Le serveur ne peut pas charger cette partie.');
+          }
           if (!cancelled && data.ok) {
             setView(data.view);
             setSeat(data.seat);
             saveSeat(gameId, data.seat);
             prevPlyRef.current = data.view.engine.ply;
-            void mirrorGameToFirestore(data.view);
             return;
           }
         }
@@ -166,12 +167,18 @@ export const GameRoom: React.FC<GameRoomProps> = ({
           return;
         }
         const data = await res.json();
-        if (!cancelled && data.ok) {
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || 'Le serveur ne peut pas charger cette partie.');
+        }
+        if (!cancelled) {
           setView(data.view);
           prevPlyRef.current = data.view.engine.ply;
         }
-      } catch {
-        if (!cancelled) setErrorMsg('Impossible de charger la partie.');
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : 'Erreur inconnue.';
+          setErrorMsg(`Impossible de charger la partie : ${message}`);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -220,7 +227,6 @@ export const GameRoom: React.FC<GameRoomProps> = ({
               setSelectedPath([]);
             }
             setView(incomingView);
-            void mirrorGameToFirestore(incomingView);
           } else if (msg?.type === 'rematch:seat' && msg.seat) {
             saveSeat(msg.seat.gameId ?? '', msg.seat);
           }
@@ -247,6 +253,38 @@ export const GameRoom: React.FC<GameRoomProps> = ({
       wsRef.current = null;
     };
   }, [gameId, seat?.seatToken, Boolean(view)]);
+
+  // Le polling garde les parties synchronisées même si les joueurs sont sur des instances serveur distinctes.
+  useEffect(() => {
+    if (!view) return;
+    let lastVersion = view.version;
+    let lastUpdatedAt = view.updatedAt;
+    let inFlight = false;
+
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetch(`/api/games/${encodeURIComponent(gameId)}`);
+        const data = await res.json();
+        if (
+          data.ok &&
+          (data.view.version > lastVersion || data.view.updatedAt > lastUpdatedAt)
+        ) {
+          lastVersion = data.view.version;
+          lastUpdatedAt = data.view.updatedAt;
+          setView(data.view);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refresh().catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [gameId, Boolean(view)]);
 
   // Redirection automatique vers la partie revanche lorsqu'elle est prête
   useEffect(() => {
@@ -614,13 +652,33 @@ export const GameRoom: React.FC<GameRoomProps> = ({
     );
   }
 
-  if (notFound || !view) {
+  if (notFound) {
     return (
       <div className="min-h-screen bg-[#F1F3F5] flex items-center justify-center p-6">
         <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-md w-full text-center space-y-4">
           <h1 className="text-xl font-semibold text-slate-900">Partie introuvable</h1>
           <p className="text-sm text-slate-600">
             Ce lien d’invitation ne correspond à aucune partie active ou archivée.
+          </p>
+          <button
+            type="button"
+            onClick={onNavigateHome}
+            className="px-5 py-2.5 bg-emerald-800 text-white text-sm font-medium rounded-lg hover:bg-emerald-900"
+          >
+            Retour à l’accueil
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!view) {
+    return (
+      <div className="min-h-screen bg-[#F1F3F5] flex items-center justify-center p-6">
+        <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-md w-full text-center space-y-4">
+          <h1 className="text-xl font-semibold text-slate-900">Partie indisponible</h1>
+          <p role="alert" className="text-sm text-slate-600">
+            {errorMsg || 'Impossible de charger la partie. Veuillez réessayer.'}
           </p>
           <button
             type="button"

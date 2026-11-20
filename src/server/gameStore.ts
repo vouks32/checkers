@@ -21,7 +21,7 @@ import type {
   SquareMarkerColor,
 } from '../types/game.ts';
 
-interface StoredGame extends GameSessionView {
+export interface StoredGame extends GameSessionView {
   whiteToken: string | null;
   blackToken: string | null;
 }
@@ -146,6 +146,14 @@ export class GameStore {
   getGameView(gameId: string): GameSessionView | null {
     const game = this.games.get(gameId);
     return game ? this.toPublicView(game) : null;
+  }
+
+  exportStoredGame(gameId: string): StoredGame | null {
+    return this.games.get(gameId) ?? null;
+  }
+
+  importStoredGame(game: StoredGame): void {
+    this.games.set(game.id, game);
   }
 
   identifySeat(gameId: string, seatToken?: string): PlayerColor | 'spectator' {

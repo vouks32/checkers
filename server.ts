@@ -1,19 +1,33 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GameStore } from './src/server/gameStore.ts';
+import { FirestoreGameStore } from './src/server/firestoreGameStore.ts';
 import type { GameSessionView, PlayerColor } from './src/types/game.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
 
-const store = new GameStore(process.env.VERCEL ? null : undefined);
+const store = process.env.VERCEL ? new FirestoreGameStore() : new GameStore();
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+
+type ApiHandler = (req: Request, res: Response) => Promise<void>;
+
+function apiHandler(handler: ApiHandler) {
+  return (req: Request, res: Response) => {
+    void handler(req, res).catch((error: unknown) => {
+      console.error('Erreur API Dames Master:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: 'Erreur interne du serveur.' });
+      }
+    });
+  };
+}
 
 interface RoomClient {
   ws: WebSocket;
@@ -42,30 +56,30 @@ function registerApiRoutes(): void {
   });
 
   // Créer une partie
-  app.post('/api/games', (req, res) => {
+  app.post('/api/games', apiHandler(async (req, res) => {
     const { pseudo, color } = req.body ?? {};
-    const result = store.createGame({ pseudo, color });
+    const result = await store.createGame({ pseudo, color });
     if (!result.ok) {
       res.status(400).json({ ok: false, error: result.error });
       return;
     }
     res.status(201).json(result);
-  });
+  }));
 
   // Consulter l'état public d'une partie
-  app.get('/api/games/:id', (req, res) => {
-    const view = store.getGameView(req.params.id);
+  app.get('/api/games/:id', apiHandler(async (req, res) => {
+    const view = await store.getGameView(req.params.id);
     if (!view) {
       res.status(404).json({ ok: false, error: 'Partie introuvable.' });
       return;
     }
     res.json({ ok: true, view });
-  });
+  }));
 
   // Rejoindre ou restaurer un siège
-  app.post('/api/games/:id/join', (req, res) => {
+  app.post('/api/games/:id/join', apiHandler(async (req, res) => {
     const { pseudo, seatToken, asSpectator } = req.body ?? {};
-    const result = store.joinGame({
+    const result = await store.joinGame({
       gameId: req.params.id,
       pseudo,
       seatToken,
@@ -78,24 +92,24 @@ function registerApiRoutes(): void {
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 
   // Confirmer la présence
-  app.post('/api/games/:id/confirm', (req, res) => {
+  app.post('/api/games/:id/confirm', apiHandler(async (req, res) => {
     const { seatToken } = req.body ?? {};
-    const result = store.confirmPresence(req.params.id, seatToken);
+    const result = await store.confirmPresence(req.params.id, seatToken);
     if (!result.ok) {
       res.status(400).json(result);
       return;
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 
   // Jouer un coup (validation serveur stricte)
-  app.post('/api/games/:id/move', (req, res) => {
+  app.post('/api/games/:id/move', apiHandler(async (req, res) => {
     const { seatToken, expectedVersion, from, to, path: movePath } = req.body ?? {};
-    const result = store.submitMove({
+    const result = await store.submitMove({
       gameId: req.params.id,
       seatToken,
       expectedVersion: Number(expectedVersion),
@@ -109,24 +123,24 @@ function registerApiRoutes(): void {
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 
   // Abandonner la partie
-  app.post('/api/games/:id/resign', (req, res) => {
+  app.post('/api/games/:id/resign', apiHandler(async (req, res) => {
     const { seatToken } = req.body ?? {};
-    const result = store.resignGame(req.params.id, seatToken);
+    const result = await store.resignGame(req.params.id, seatToken);
     if (!result.ok) {
       res.status(400).json(result);
       return;
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 
   // Demander / accepter une revanche
-  app.post('/api/games/:id/rematch', (req, res) => {
+  app.post('/api/games/:id/rematch', apiHandler(async (req, res) => {
     const { seatToken } = req.body ?? {};
-    const result = store.requestRematch(req.params.id, seatToken);
+    const result = await store.requestRematch(req.params.id, seatToken);
     if (!result.ok) {
       res.status(400).json(result);
       return;
@@ -137,31 +151,31 @@ function registerApiRoutes(): void {
       view: result.view,
       newGameId: result.newGameView?.id ?? null,
     });
-  });
+  }));
 
   // Annotations pédagogiques (temps réel, sans altérer la partie)
-  app.post('/api/games/:id/annotations', (req, res) => {
+  app.post('/api/games/:id/annotations', apiHandler(async (req, res) => {
     const { seatToken, action } = req.body ?? {};
-    const result = store.updateAnnotations(req.params.id, seatToken, action);
+    const result = await store.updateAnnotations(req.params.id, seatToken, action);
     if (!result.ok) {
       res.status(400).json(result);
       return;
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 
   // Simulation pédagogique (copie temporaire)
-  app.post('/api/games/:id/simulation', (req, res) => {
+  app.post('/api/games/:id/simulation', apiHandler(async (req, res) => {
     const { seatToken, action } = req.body ?? {};
-    const result = store.updateSimulation(req.params.id, seatToken, action);
+    const result = await store.updateSimulation(req.params.id, seatToken, action);
     if (!result.ok) {
       res.status(400).json(result);
       return;
     }
     broadcastGameState(req.params.id, result.view);
     res.json(result);
-  });
+  }));
 }
 
 registerApiRoutes();
@@ -172,18 +186,29 @@ function registerWebSocketRoutes(): void {
   const wss = new WebSocketServer({ server, path: '/api/ws' });
 
   wss.on('connection', (ws, req) => {
+    void handleWebSocketConnection(ws, req).catch((error: unknown) => {
+      console.error('Erreur WebSocket Dames Master:', error);
+      if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'Erreur serveur');
+    });
+  });
+}
+
+async function handleWebSocketConnection(
+  ws: WebSocket,
+  req: http.IncomingMessage,
+): Promise<void> {
     const url = new URL(req.url ?? '/ws', `http://${req.headers.host || 'localhost'}`);
     const gameId = url.searchParams.get('gameId') ?? '';
     const seatToken = url.searchParams.get('seatToken') ?? undefined;
     const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    if (!gameId || !store.getGameView(gameId)) {
+    if (!gameId || !(await store.getGameView(gameId))) {
       ws.send(JSON.stringify({ type: 'error', error: 'Partie introuvable.' }));
       ws.close();
       return;
     }
 
-    const role = store.identifySeat(gameId, seatToken);
+    const role = await store.identifySeat(gameId, seatToken);
     const client: RoomClient = { ws, clientId, gameId, role };
     let roomSet = rooms.get(gameId);
     if (!roomSet) {
@@ -192,7 +217,7 @@ function registerWebSocketRoutes(): void {
     }
     roomSet.add(client);
 
-    const updatedView = store.setConnectionState(gameId, role, clientId, true);
+    const updatedView = await store.setConnectionState(gameId, role, clientId, true);
     if (updatedView) {
       broadcastGameState(gameId, updatedView);
     }
@@ -205,20 +230,23 @@ function registerWebSocketRoutes(): void {
           return;
         }
         if (msg?.type === 'rematch:claim' && typeof msg.rematchGameId === 'string') {
-          // Permet au client d'obtenir son seatToken sur la partie revanche
-          const oldGame = store.getGameView(gameId);
-          if (oldGame?.rematchGameId === msg.rematchGameId && seatToken) {
-            const oldRole = store.identifySeat(gameId, seatToken);
-            if (oldRole === 'white' || oldRole === 'black') {
-              const joined = store.joinGame({
+          void (async () => {
+            const oldGame = await store.getGameView(gameId);
+            if (oldGame?.rematchGameId === msg.rematchGameId && seatToken) {
+              const oldRole = await store.identifySeat(gameId, seatToken);
+              if (oldRole === 'white' || oldRole === 'black') {
+                const joined = await store.joinGame({
                 gameId: msg.rematchGameId,
                 seatToken,
               });
-              if (joined.ok) {
-                ws.send(JSON.stringify({ type: 'rematch:seat', seat: joined.seat }));
+                if (joined.ok) {
+                  ws.send(JSON.stringify({ type: 'rematch:seat', seat: joined.seat }));
+                }
               }
             }
-          }
+          })().catch((error: unknown) => {
+            console.error('Erreur récupération du siège de revanche:', error);
+          });
         }
       } catch {
         // Ignorer les trames malformées
@@ -232,17 +260,19 @@ function registerWebSocketRoutes(): void {
         // Vérifier s'il reste un autre onglet connecté pour ce même rôle
         const stillConnected = Array.from(set).some((c) => c.role === role);
         if (!stillConnected) {
-          const afterLeave = store.setConnectionState(gameId, role, clientId, false);
-          if (afterLeave) {
-            broadcastGameState(gameId, afterLeave);
-          }
+          void Promise.resolve(store.setConnectionState(gameId, role, clientId, false))
+            .then((afterLeave) => {
+              if (afterLeave) broadcastGameState(gameId, afterLeave);
+            })
+            .catch((error: unknown) => {
+              console.error('Erreur mise à jour de la présence:', error);
+            });
         }
         if (set.size === 0) {
           rooms.delete(gameId);
         }
       }
     });
-  });
 }
 
 registerWebSocketRoutes();

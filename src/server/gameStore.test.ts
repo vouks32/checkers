@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GameStore } from './gameStore.ts';
+import { GameStore, type StoredGame } from './gameStore.ts';
 
 test('create, join, presence confirmation, and seat hijack protection', () => {
   const store = new GameStore(null);
@@ -98,6 +98,105 @@ test('create, join, presence confirmation, and seat hijack protection', () => {
     assert.equal(restored.restored, true);
     assert.equal(restored.seat.role, 'white');
     assert.equal(restored.view.white?.connected, true);
+  }
+});
+
+test('a game survives store rehydration through join, play, and a decisive finish', () => {
+  let store = new GameStore(null);
+  const created = store.createGame({ pseudo: 'Alice', color: 'white' });
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const gameId = created.view.id;
+  const aliceToken = created.seat.seatToken!;
+  const reopenStore = () => {
+    const reopened = new GameStore(null);
+    const saved = store.exportStoredGame(gameId);
+    assert.ok(saved);
+    const restored: StoredGame = JSON.parse(JSON.stringify(saved));
+    reopened.importStoredGame(restored);
+    return reopened;
+  };
+
+  store = reopenStore();
+  const joined = store.joinGame({ gameId, pseudo: 'Bob' });
+  assert.equal(joined.ok, true);
+  if (!joined.ok) return;
+  const bobToken = joined.seat.seatToken!;
+
+  store = reopenStore();
+  const aliceConfirmed = store.confirmPresence(gameId, aliceToken);
+  assert.equal(aliceConfirmed.ok, true);
+
+  store = reopenStore();
+  const ready = store.confirmPresence(gameId, bobToken);
+  assert.equal(ready.ok, true);
+  if (!ready.ok) return;
+  assert.equal(ready.view.status, 'playing');
+
+  store = reopenStore();
+  const move = store.submitMove({
+    gameId,
+    seatToken: aliceToken,
+    expectedVersion: ready.view.version,
+    from: 'B4',
+    to: 'C5',
+  });
+  assert.equal(move.ok, true);
+  if (!move.ok) return;
+
+  store = reopenStore();
+  const resigned = store.resignGame(gameId, bobToken);
+  assert.equal(resigned.ok, true);
+  if (resigned.ok) {
+    assert.equal(resigned.view.status, 'finished');
+    assert.equal(resigned.view.engine.winner, 'white');
+    assert.equal(resigned.view.engine.endReason, 'resignation');
+  }
+});
+
+test('a winning move finishes the game and records the winner and reason', () => {
+  const store = new GameStore(null);
+  const created = store.createGame({ pseudo: 'Alice', color: 'white' });
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const gameId = created.view.id;
+  const joined = store.joinGame({ gameId, pseudo: 'Bob' });
+  assert.equal(joined.ok, true);
+  if (!joined.ok) return;
+
+  store.confirmPresence(gameId, created.seat.seatToken!);
+  const ready = store.confirmPresence(gameId, joined.seat.seatToken!);
+  assert.equal(ready.ok, true);
+  if (!ready.ok) return;
+
+  const stored = store.exportStoredGame(gameId);
+  assert.ok(stored);
+  stored.engine.board = {
+    A3: { color: 'black', type: 'man' },
+    B4: { color: 'white', type: 'man' },
+    C5: { color: 'white', type: 'man' },
+    B2: { color: 'white', type: 'man' },
+    C1: { color: 'white', type: 'man' },
+    E1: { color: 'white', type: 'man' },
+  };
+  stored.engine.turn = 'white';
+  stored.engine.positionCounts = {};
+
+  const result = store.submitMove({
+    gameId,
+    seatToken: created.seat.seatToken!,
+    expectedVersion: ready.view.version,
+    from: 'E1',
+    to: 'F2',
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.view.status, 'finished');
+    assert.equal(result.view.engine.winner, 'white');
+    assert.equal(result.view.engine.endReason, 'no_moves');
   }
 });
 
