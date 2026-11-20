@@ -637,6 +637,55 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   })();
 
   const forcedCaptureCount = legalMoves[0]?.captured.length ?? 0;
+  const finishedBoardMessage =
+    view.status !== 'finished'
+      ? null
+      : (() => {
+          const endReason = END_REASON_LABELS[view.engine.endReason];
+          if (view.engine.winner === 'draw') {
+            return {
+              outcome: 'draw' as const,
+              title: isSpectator ? 'Match nul' : `Bien joué, ${seat.pseudo} !`,
+              message: 'La partie se termine sans vainqueur.',
+              detail: endReason,
+            };
+          }
+          if (view.engine.winner === 'none') {
+            return {
+              outcome: 'spectator' as const,
+              title: 'Partie terminée',
+              message: 'La partie est terminée.',
+              detail: endReason,
+            };
+          }
+
+          const winnerColor = view.engine.winner;
+          const winnerPseudo =
+            (winnerColor === 'white' ? view.white?.pseudo : view.black?.pseudo) ??
+            (winnerColor === 'white' ? 'Les Blancs' : 'Les Noirs');
+          if (isSpectator) {
+            return {
+              outcome: 'spectator' as const,
+              title: `${winnerPseudo} a gagné`,
+              message: 'La partie est terminée.',
+              detail: endReason,
+            };
+          }
+          if (myColor === winnerColor) {
+            return {
+              outcome: 'winner' as const,
+              title: `Bravo, ${seat.pseudo} !`,
+              message: 'Vous avez remporté la partie.',
+              detail: endReason,
+            };
+          }
+          return {
+            outcome: 'loser' as const,
+            title: `Partie terminée, ${seat.pseudo}`,
+            message: `${winnerPseudo} a remporté la partie. Vous avez perdu.`,
+            detail: endReason,
+          };
+        })();
 
   return (
     <div className="min-h-screen bg-[#F1F3F5] text-slate-900 flex flex-col">
@@ -822,6 +871,8 @@ export const GameRoom: React.FC<GameRoomProps> = ({
             selectedPath={selectedPath}
             isSimulation={isSimulationActive}
             isHistoryPreview={previewPly !== null}
+            movePending={movePending}
+            finishedMessage={finishedBoardMessage}
             onSquareClick={handleSquareClick}
           />
 

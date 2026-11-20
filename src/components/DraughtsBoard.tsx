@@ -1,4 +1,5 @@
 import React from 'react';
+import { Loader2 } from 'lucide-react';
 import {
   COLUMNS,
   RANKS,
@@ -30,6 +31,13 @@ interface DraughtsBoardProps {
   selectedPath: Coord[]; // [from] or [from, step1, ...] during multi-capture
   isSimulation?: boolean;
   isHistoryPreview?: boolean;
+  movePending?: boolean;
+  finishedMessage?: {
+    outcome: 'winner' | 'loser' | 'draw' | 'spectator';
+    title: string;
+    message: string;
+    detail: string;
+  } | null;
   onSquareClick: (coord: Coord) => void;
 }
 
@@ -107,6 +115,8 @@ export const DraughtsBoard: React.FC<DraughtsBoardProps> = ({
   selectedPath,
   isSimulation = false,
   isHistoryPreview = false,
+  movePending = false,
+  finishedMessage = null,
   onSquareClick,
 }) => {
   // Calculer les pièces jouables et les cases cibles pour le chemin sélectionné
@@ -148,6 +158,14 @@ export const DraughtsBoard: React.FC<DraughtsBoardProps> = ({
   }
 
   const activePieceCoord = selectedPath.length > 0 ? selectedPath[selectedPath.length - 1] : null;
+  const resultTone =
+    finishedMessage?.outcome === 'winner'
+      ? 'border-emerald-300/70 bg-emerald-950/90'
+      : finishedMessage?.outcome === 'loser'
+        ? 'border-rose-300/70 bg-slate-950/90'
+        : finishedMessage?.outcome === 'draw'
+          ? 'border-amber-300/70 bg-amber-950/90'
+          : 'border-white/40 bg-slate-950/90';
 
   const allArrows = [
     ...annotations.arrows,
@@ -325,6 +343,44 @@ export const DraughtsBoard: React.FC<DraughtsBoardProps> = ({
                 }),
               )}
             </div>
+
+            {finishedMessage ? (
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="board-game-result"
+                className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-[2px] pointer-events-none"
+              >
+                <div
+                  className={`max-w-[92%] rounded-xl border px-5 py-4 text-center text-white shadow-2xl sm:px-7 sm:py-6 ${resultTone}`}
+                >
+                  <h2 className="font-display text-lg font-bold sm:text-2xl">
+                    {finishedMessage.title}
+                  </h2>
+                  <p className="mt-2 text-sm font-medium sm:text-base">
+                    {finishedMessage.message}
+                  </p>
+                  {finishedMessage.detail && (
+                    <p className="mt-2 text-xs text-white/80 sm:text-sm">
+                      {finishedMessage.detail}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : movePending ? (
+              <div
+                role="status"
+                aria-live="polite"
+                aria-label="Envoi du coup en cours"
+                data-testid="board-move-pending"
+                className="absolute inset-0 z-30 flex cursor-wait items-center justify-center bg-slate-950/35"
+              >
+                <div className="flex flex-col items-center gap-2 rounded-xl border border-white/30 bg-slate-950/85 px-5 py-4 text-white shadow-xl">
+                  <Loader2 className="h-9 w-9 animate-spin text-emerald-300" />
+                  <span className="text-sm font-semibold">Envoi du coup...</span>
+                </div>
+              </div>
+            ) : null}
 
             {/* Calque SVG des flèches pédagogiques */}
             <svg
