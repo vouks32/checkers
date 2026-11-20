@@ -1,22 +1,23 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  linkWithPopup,
+  onAuthStateChanged,
+  signInAnonymously,
+  signInWithPopup,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import {
   doc,
-  getDocFromServer,
+  getDoc,
   getFirestore,
   serverTimestamp,
   setDoc,
-  collection,
-  onSnapshot,
-  query,
-  where,
-  orderBy,
-  limit,
-  type Unsubscribe,
+  updateDoc,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-import { encodeBoardForFirestore } from './engine/draughts.ts';
-import type { GameSessionView } from './types/game.ts';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -77,24 +78,48 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection(): Promise<void> {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-void testConnection();
-
 export async function signInWithGoogle() {
+  if (auth.currentUser?.isAnonymous) {
+    return linkWithPopup(auth.currentUser, googleProvider);
+  }
   return signInWithPopup(auth, googleProvider);
 }
 
 export async function signOutFirebase() {
   return signOut(auth);
+}
+
+function waitForInitialAuthState(): Promise<User | null> {
+  if (auth.currentUser) return Promise.resolve(auth.currentUser);
+
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        unsubscribe();
+        resolve(user);
+      },
+      (error) => {
+        unsubscribe();
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function ensureAuthenticatedUser(): Promise<User> {
+  const existingUser = await waitForInitialAuthState();
+  if (existingUser) return existingUser;
+
+  try {
+    return (await signInAnonymously(auth)).user;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('auth/operation-not-allowed')) {
+      throw new Error('Activez la connexion anonyme dans Firebase Authentication.');
+    }
+    throw error;
+  }
 }
 
 export async function upsertUserProfile(pseudo: string): Promise<void> {
@@ -103,80 +128,23 @@ export async function upsertUserProfile(pseudo: string): Promise<void> {
   const userPath = `users/${user.uid}`;
   try {
     const cleanPseudo = pseudo.trim().slice(0, 40) || user.displayName?.slice(0, 40) || 'Joueur';
-    await setDoc(
-      doc(db, 'users', user.uid),
-      {
+    const userRef = doc(db, 'users', user.uid);
+    const existing = await getDoc(userRef);
+    if (existing.exists()) {
+      await updateDoc(userRef, {
+        pseudo: cleanPseudo,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(userRef, {
         uid: user.uid,
         pseudo: cleanPseudo,
         email: user.email.slice(0, 160),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, userPath);
   }
-}
-
-export async function mirrorGameToFirestore(view: GameSessionView): Promise<void> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
-  const gamePath = `games/${view.id}`;
-  try {
-    const pieces = encodeBoardForFirestore(view.engine.board).slice(0, 40);
-    await setDoc(
-      doc(db, 'games', view.id),
-      {
-        id: view.id,
-        ownerId: user.uid,
-        whitePlayerUid: view.white ? user.uid : '',
-        blackPlayerUid: view.black ? user.uid : '',
-        whitePseudo: (view.white?.pseudo ?? '').slice(0, 40),
-        blackPseudo: (view.black?.pseudo ?? '').slice(0, 40),
-        status: view.status,
-        turn: view.engine.turn,
-        winner: view.engine.winner,
-        version: view.version,
-        pieces,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: false },
-    );
-  } catch {
-    // Le miroir Firestore reste optionnel si la partie existe déjà sous un autre propriétaire
-  }
-}
-
-export function subscribeUserGames(
-  uid: string,
-  onData: (games: Array<{ id: string; whitePseudo: string; blackPseudo: string; status: string; winner: string }>) => void,
-): Unsubscribe {
-  const path = 'games';
-  const q = query(
-    collection(db, 'games'),
-    where('ownerId', '==', uid),
-    orderBy('updatedAt', 'desc'),
-    limit(10),
-  );
-  return onSnapshot(
-    q,
-    (snap) => {
-      const items = snap.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: String(data.id ?? d.id),
-          whitePseudo: String(data.whitePseudo ?? ''),
-          blackPseudo: String(data.blackPseudo ?? ''),
-          status: String(data.status ?? 'waiting'),
-          winner: String(data.winner ?? 'none'),
-        };
-      });
-      onData(items);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    },
-  );
 }

@@ -22,6 +22,17 @@ import {
   getLegalMoves,
   isDarkCoord,
 } from '../engine/draughts.ts';
+import {
+  confirmPresence,
+  joinGame,
+  resignGame,
+  requestRematch,
+  submitMove,
+  updateAnnotations,
+  updateSimulation,
+  watchGame,
+} from '../gameApi.ts';
+import type { AnnotationAction, SimulationAction } from '../server/gameStore.ts';
 import type {
   AnnotationColor,
   ClientSeatInfo,
@@ -118,7 +129,6 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   const [muted, setMuted] = useState(() => getSoundMuted());
 
   const prevPlyRef = useRef<number>(0);
-  const wsRef = useRef<WebSocket | null>(null);
 
   const inviteUrl =
     typeof window !== 'undefined' ? `${window.location.origin}/game/${gameId}` : `/game/${gameId}`;
@@ -126,165 +136,64 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   // Initialisation / restauration de session
   useEffect(() => {
     let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    let hasInitialView = false;
     setLoading(true);
     setNotFound(false);
     setErrorMsg(null);
+    setView(null);
     setSelectedPath([]);
     setPreviewPly(null);
 
     const saved = loadSavedSeat(gameId);
     setSeat(saved);
 
-    async function initRoom() {
-      try {
-        if (saved?.seatToken) {
-          const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/join`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seatToken: saved.seatToken }),
-          });
-          if (res.status === 404) {
-            if (!cancelled) setNotFound(true);
-            return;
-          }
-          const data = await res.json();
-          if (!res.ok && res.status >= 500) {
-            throw new Error(data.error || 'Le serveur ne peut pas charger cette partie.');
-          }
-          if (!cancelled && data.ok) {
-            setView(data.view);
-            setSeat(data.seat);
-            saveSeat(gameId, data.seat);
-            prevPlyRef.current = data.view.engine.ply;
-            return;
-          }
+    void watchGame(
+      gameId,
+      (incomingView, currentSeat) => {
+        if (cancelled) return;
+        if (hasInitialView && incomingView.engine.ply > prevPlyRef.current) {
+          const lastMove = incomingView.moves[incomingView.moves.length - 1];
+          if (lastMove?.promoted) playPromoteSound();
+          else if (lastMove && lastMove.captured.length > 0) playCaptureSound();
+          else playMoveSound();
+          setSelectedPath([]);
         }
-
-        // Sinon charger l'état public de la partie
-        const res = await fetch(`/api/games/${encodeURIComponent(gameId)}`);
-        if (res.status === 404) {
-          if (!cancelled) setNotFound(true);
-          return;
-        }
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || 'Le serveur ne peut pas charger cette partie.');
-        }
+        hasInitialView = true;
+        prevPlyRef.current = incomingView.engine.ply;
+        setView(incomingView);
+        const nextSeat = currentSeat ?? (saved?.role === 'spectator' ? saved : null);
+        setSeat(nextSeat);
+        if (nextSeat) saveSeat(gameId, nextSeat);
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setNotFound(true);
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setErrorMsg('Impossible de charger la partie. Vérifiez la connexion anonyme et les règles Firestore.');
+        setLoading(false);
+      },
+    )
+      .then((stopWatching) => {
+        if (cancelled) stopWatching();
+        else unsubscribe = stopWatching;
+      })
+      .catch(() => {
         if (!cancelled) {
-          setView(data.view);
-          prevPlyRef.current = data.view.engine.ply;
+          setErrorMsg('Impossible de charger la partie. Vérifiez la connexion anonyme et les règles Firestore.');
+          setLoading(false);
         }
-      } catch (error) {
-        if (!cancelled) {
-          const message = error instanceof Error ? error.message : 'Erreur inconnue.';
-          setErrorMsg(`Impossible de charger la partie : ${message}`);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
+      });
 
-    void initRoom();
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
   }, [gameId]);
-
-  // Synchronisation WebSocket temps réel + reconnexion automatique
-  useEffect(() => {
-    if (!view) return;
-    let closedByUser = false;
-    let reconnectTimer: number | null = null;
-    let heartbeatTimer: number | null = null;
-
-    const connect = () => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const tokenParam = seat?.seatToken ? `&seatToken=${encodeURIComponent(seat.seatToken)}` : '';
-      const wsUrl = `${protocol}//${window.location.host}/api/ws?gameId=${encodeURIComponent(gameId)}${tokenParam}`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        heartbeatTimer = window.setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ping' }));
-          }
-        }, 20000);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg?.type === 'game:state' && msg.view) {
-            const incomingView: GameSessionView = msg.view;
-            // Son discret lorsqu'un nouveau coup arrive
-            if (incomingView.engine.ply > prevPlyRef.current) {
-              const lastMove = incomingView.moves[incomingView.moves.length - 1];
-              if (lastMove?.promoted) playPromoteSound();
-              else if (lastMove && lastMove.captured.length > 0) playCaptureSound();
-              else playMoveSound();
-              prevPlyRef.current = incomingView.engine.ply;
-              setSelectedPath([]);
-            }
-            setView(incomingView);
-          } else if (msg?.type === 'rematch:seat' && msg.seat) {
-            saveSeat(msg.seat.gameId ?? '', msg.seat);
-          }
-        } catch {
-          // Ignorer message non JSON
-        }
-      };
-
-      ws.onclose = () => {
-        if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-        if (!closedByUser) {
-          reconnectTimer = window.setTimeout(connect, 2000);
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      closedByUser = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-      wsRef.current?.close();
-      wsRef.current = null;
-    };
-  }, [gameId, seat?.seatToken, Boolean(view)]);
-
-  // Le polling garde les parties synchronisées même si les joueurs sont sur des instances serveur distinctes.
-  useEffect(() => {
-    if (!view) return;
-    let lastVersion = view.version;
-    let lastUpdatedAt = view.updatedAt;
-    let inFlight = false;
-
-    const refresh = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const res = await fetch(`/api/games/${encodeURIComponent(gameId)}`);
-        const data = await res.json();
-        if (
-          data.ok &&
-          (data.view.version > lastVersion || data.view.updatedAt > lastUpdatedAt)
-        ) {
-          lastVersion = data.view.version;
-          lastUpdatedAt = data.view.updatedAt;
-          setView(data.view);
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    const timer = window.setInterval(() => {
-      void refresh().catch(() => {});
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [gameId, Boolean(view)]);
 
   // Redirection automatique vers la partie revanche lorsqu'elle est prête
   useEffect(() => {
@@ -359,26 +268,22 @@ export const GameRoom: React.FC<GameRoomProps> = ({
     setJoining(true);
     setErrorMsg(null);
     try {
-      const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pseudo: joinPseudo.trim() || 'Spectateur',
-          asSpectator,
-        }),
+      const result = await joinGame({
+        gameId,
+        pseudo: joinPseudo.trim() || 'Spectateur',
+        asSpectator,
       });
-      const data = await res.json();
-      if (!data.ok) {
-        setErrorMsg(data.error || 'Impossible de rejoindre la partie.');
-        if (data.view) setView(data.view);
+      if (!result.ok) {
+        setErrorMsg(result.error || 'Impossible de rejoindre la partie.');
+        if (result.view) setView(result.view);
         return;
       }
-      setView(data.view);
-      setSeat(data.seat);
-      saveSeat(gameId, data.seat);
-      prevPlyRef.current = data.view.engine.ply;
+      setView(result.view);
+      setSeat(result.seat);
+      saveSeat(gameId, result.seat);
+      prevPlyRef.current = result.view.engine.ply;
     } catch {
-      setErrorMsg('Erreur réseau lors de la connexion à la partie.');
+      setErrorMsg('Impossible de rejoindre cette partie. Vérifiez les règles Firestore.');
     } finally {
       setJoining(false);
     }
@@ -387,14 +292,13 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   const handleConfirmPresence = async () => {
     if (!seat?.seatToken) return;
     setErrorMsg(null);
-    const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/confirm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seatToken: seat.seatToken }),
-    });
-    const data = await res.json();
-    if (data.ok) setView(data.view);
-    else setErrorMsg(data.error);
+    try {
+      const result = await confirmPresence(gameId, seat.seatToken);
+      if (result.ok) setView(result.view);
+      else setErrorMsg(result.error);
+    } catch {
+      setErrorMsg('Impossible de confirmer la présence. Vérifiez les règles Firestore.');
+    }
   };
 
   const submitBoardMove = useCallback(
@@ -405,48 +309,51 @@ export const GameRoom: React.FC<GameRoomProps> = ({
       setErrorMsg(null);
 
       if (isSimulationActive) {
-        const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/simulation`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            seatToken: seat.seatToken,
-            action: { type: 'move', from, to, path: movePath },
-          }),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          setView(data.view);
-          setSelectedPath([]);
-          playMoveSound();
-        } else {
-          setErrorMsg(data.error);
+        try {
+          const result = await updateSimulation(gameId, seat.seatToken, {
+            type: 'move',
+            from,
+            to,
+            path: movePath,
+          });
+          if (result.ok) {
+            setView(result.view);
+            setSelectedPath([]);
+            playMoveSound();
+          } else {
+            setErrorMsg(result.error);
+            setSelectedPath([]);
+          }
+        } catch {
+          setErrorMsg('Impossible de modifier la simulation. Vérifiez les règles Firestore.');
           setSelectedPath([]);
         }
         return;
       }
 
-      const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      try {
+        const result = await submitMove({
+          gameId,
           seatToken: seat.seatToken,
           expectedVersion: view.version,
           from,
           to,
           path: movePath,
-        }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setView(data.view);
-        setSelectedPath([]);
-        prevPlyRef.current = data.view.engine.ply;
-        if (data.move?.promoted) playPromoteSound();
-        else if (data.move?.captured?.length > 0) playCaptureSound();
-        else playMoveSound();
-      } else {
-        setErrorMsg(data.error || 'Coup refusé par le serveur.');
-        if (data.view) setView(data.view);
+        });
+        if (result.ok) {
+          setView(result.view);
+          setSelectedPath([]);
+          prevPlyRef.current = result.view.engine.ply;
+          if (result.move?.promoted) playPromoteSound();
+          else if (result.move?.captured?.length > 0) playCaptureSound();
+          else playMoveSound();
+        } else {
+          setErrorMsg(result.error || 'Coup refusé.');
+          if (result.view) setView(result.view);
+          setSelectedPath([]);
+        }
+      } catch {
+        setErrorMsg('Impossible d’enregistrer le coup. Vérifiez les règles Firestore.');
         setSelectedPath([]);
       }
     },
@@ -454,32 +361,30 @@ export const GameRoom: React.FC<GameRoomProps> = ({
   );
 
   const sendAnnotationAction = useCallback(
-    async (action: Record<string, unknown>) => {
+    async (action: AnnotationAction) => {
       if (!seat?.seatToken) return;
-      const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seatToken: seat.seatToken, action }),
-      });
-      const data = await res.json();
-      if (data.ok) setView(data.view);
-      else setErrorMsg(data.error);
+      try {
+        const result = await updateAnnotations(gameId, seat.seatToken, action);
+        if (result.ok) setView(result.view);
+        else setErrorMsg(result.error);
+      } catch {
+        setErrorMsg('Impossible d’enregistrer les annotations. Vérifiez les règles Firestore.');
+      }
     },
     [gameId, seat?.seatToken],
   );
 
   const sendSimulationAction = useCallback(
-    async (action: Record<string, unknown>) => {
+    async (action: SimulationAction) => {
       if (!seat?.seatToken) return;
       setSelectedPath([]);
-      const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/simulation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seatToken: seat.seatToken, action }),
-      });
-      const data = await res.json();
-      if (data.ok) setView(data.view);
-      else setErrorMsg(data.error);
+      try {
+        const result = await updateSimulation(gameId, seat.seatToken, action);
+        if (result.ok) setView(result.view);
+        else setErrorMsg(result.error);
+      } catch {
+        setErrorMsg('Impossible de modifier la simulation. Vérifiez les règles Firestore.');
+      }
     },
     [gameId, seat?.seatToken],
   );
@@ -619,28 +524,23 @@ export const GameRoom: React.FC<GameRoomProps> = ({
       return;
     }
     setConfirmResign(false);
-    const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/resign`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seatToken: seat.seatToken }),
-    });
-    const data = await res.json();
-    if (data.ok) setView(data.view);
-    else setErrorMsg(data.error);
+    try {
+      const result = await resignGame(gameId, seat.seatToken);
+      if (result.ok) setView(result.view);
+      else setErrorMsg(result.error);
+    } catch {
+      setErrorMsg('Impossible d’abandonner la partie. Vérifiez les règles Firestore.');
+    }
   };
 
   const handleRematch = async () => {
     if (!seat?.seatToken) return;
-    const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/rematch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seatToken: seat.seatToken }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      setView(data.view);
-    } else {
-      setErrorMsg(data.error);
+    try {
+      const result = await requestRematch(gameId, seat.seatToken);
+      if (result.ok) setView(result.view);
+      else setErrorMsg(result.error);
+    } catch {
+      setErrorMsg('Impossible de demander une revanche. Vérifiez les règles Firestore.');
     }
   };
 

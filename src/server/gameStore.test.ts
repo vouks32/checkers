@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { GameStore, type StoredGame } from './gameStore.ts';
 
 test('create, join, presence confirmation, and seat hijack protection', () => {
-  const store = new GameStore(null);
+  const store = new GameStore();
 
   const created = store.createGame({ pseudo: 'Alice', color: 'white' });
   assert.equal(created.ok, true);
@@ -102,7 +102,7 @@ test('create, join, presence confirmation, and seat hijack protection', () => {
 });
 
 test('a game survives store rehydration through join, play, and a decisive finish', () => {
-  let store = new GameStore(null);
+  let store = new GameStore();
   const created = store.createGame({ pseudo: 'Alice', color: 'white' });
   assert.equal(created.ok, true);
   if (!created.ok) return;
@@ -110,7 +110,7 @@ test('a game survives store rehydration through join, play, and a decisive finis
   const gameId = created.view.id;
   const aliceToken = created.seat.seatToken!;
   const reopenStore = () => {
-    const reopened = new GameStore(null);
+    const reopened = new GameStore();
     const saved = store.exportStoredGame(gameId);
     assert.ok(saved);
     const restored: StoredGame = JSON.parse(JSON.stringify(saved));
@@ -156,7 +156,7 @@ test('a game survives store rehydration through join, play, and a decisive finis
 });
 
 test('a winning move finishes the game and records the winner and reason', () => {
-  const store = new GameStore(null);
+  const store = new GameStore();
   const created = store.createGame({ pseudo: 'Alice', color: 'white' });
   assert.equal(created.ok, true);
   if (!created.ok) return;
@@ -200,8 +200,42 @@ test('a winning move finishes the game and records the winner and reason', () =>
   }
 });
 
+test('both players can request a rematch with their seats and colors swapped', () => {
+  const store = new GameStore();
+  const created = store.createGame({ pseudo: 'Alice', color: 'white' });
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const gameId = created.view.id;
+  const aliceUid = created.seat.seatToken!;
+  const joined = store.joinGame({ gameId, pseudo: 'Bob' });
+  assert.equal(joined.ok, true);
+  if (!joined.ok) return;
+  const bobUid = joined.seat.seatToken!;
+
+  store.confirmPresence(gameId, aliceUid);
+  store.confirmPresence(gameId, bobUid);
+  store.resignGame(gameId, bobUid);
+
+  const firstRequest = store.requestRematch(gameId, aliceUid);
+  assert.equal(firstRequest.ok, true);
+  if (!firstRequest.ok) return;
+  assert.equal(firstRequest.newGameView, undefined);
+
+  const accepted = store.requestRematch(gameId, bobUid);
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok || !accepted.newGameView) return;
+
+  assert.equal(accepted.view.rematchGameId, accepted.newGameView.id);
+  assert.equal(accepted.newGameView.status, 'playing');
+  assert.equal(accepted.newGameView.white?.pseudo, 'Bob');
+  assert.equal(accepted.newGameView.black?.pseudo, 'Alice');
+  assert.equal(accepted.newSeatTokens?.whiteToken, bobUid);
+  assert.equal(accepted.newSeatTokens?.blackToken, aliceUid);
+});
+
 test('pedagogical annotations and simulation never alter the real game board or turn', () => {
-  const store = new GameStore(null);
+  const store = new GameStore();
   const created = store.createGame({ pseudo: 'Alice', color: 'white' });
   assert.equal(created.ok, true);
   if (!created.ok) return;

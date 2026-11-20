@@ -1,29 +1,207 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Filet de sécurité global par défaut
-    match /{document=**} {
-      allow read, write: if false;
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isAuthenticated() && request.auth.token.email_verified == true;
     }
 
     function isValidId(id) {
-      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function incoming() {
-      return request.resource.data;
+    function isValidSeat(seat, color) {
+      return seat == null || (
+        seat is map
+        && seat.keys().hasAll(['pseudo', 'color', 'confirmed', 'connected', 'lastSeenAt'])
+        && seat.keys().hasOnly(['pseudo', 'color', 'confirmed', 'connected', 'lastSeenAt'])
+        && seat.pseudo is string
+        && seat.pseudo.size() >= 1
+        && seat.pseudo.size() <= 30
+        && seat.color == color
+        && seat.confirmed is bool
+        && seat.connected is bool
+        && seat.lastSeenAt is string
+      );
     }
 
-    function existing() {
-      return resource.data;
+    function isValidEngine(engine) {
+      return engine is map
+        && engine.keys().hasAll([
+          'board', 'turn', 'ply', 'kingOnlyPlies', 'endgame16Plies',
+          'endgame5Plies', 'positionCounts', 'winner', 'endReason'
+        ])
+        && engine.board is map
+        && engine.turn in ['white', 'black']
+        && engine.ply is int
+        && engine.kingOnlyPlies is int
+        && engine.endgame16Plies is int
+        && engine.endgame5Plies is int
+        && engine.positionCounts is map
+        && engine.winner in ['none', 'white', 'black', 'draw']
+        && engine.endReason in [
+          'none', 'no_pieces', 'no_moves', 'resignation',
+          'threefold_repetition', 'twenty_five_move_rule',
+          'endgame_16_moves', 'endgame_5_moves', 'mutual_draw'
+        ];
     }
 
-    function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+    function isValidGame(data, gameId) {
+      return data.keys().hasAll([
+          'id', 'creatorColor', 'status', 'version', 'white', 'black',
+          'spectatorCount', 'engine', 'moves', 'annotations', 'simulation',
+          'rematchRequestedBy', 'rematchGameId', 'createdAt', 'updatedAt',
+          'whiteToken', 'blackToken'
+        ])
+        && data.keys().hasOnly([
+          'id', 'creatorColor', 'status', 'version', 'white', 'black',
+          'spectatorCount', 'engine', 'moves', 'annotations', 'simulation',
+          'rematchRequestedBy', 'rematchGameId', 'createdAt', 'updatedAt',
+          'whiteToken', 'blackToken'
+        ])
+        && data.id == gameId
+        && isValidId(data.id)
+        && data.creatorColor in ['white', 'black']
+        && data.status in ['waiting', 'confirming', 'playing', 'finished']
+        && data.version is int
+        && data.version >= 1
+        && isValidSeat(data.white, 'white')
+        && isValidSeat(data.black, 'black')
+        && data.spectatorCount is int
+        && isValidEngine(data.engine)
+        && data.moves is list
+        && data.moves.size() <= 512
+        && data.annotations is map
+        && data.annotations.highlights is map
+        && data.annotations.arrows is list
+        && data.annotations.arrows.size() <= 24
+        && data.annotations.squareMarkers is map
+        && data.annotations.notes is list
+        && data.annotations.notes.size() <= 40
+        && data.annotations.updatedBy is string
+        && data.annotations.updatedAt is string
+        && (
+          data.simulation == null
+          || (
+            data.simulation is map
+            && data.simulation.active is bool
+            && data.simulation.shared is bool
+            && data.simulation.controllerPseudo is string
+            && isValidEngine(data.simulation.engine)
+            && data.simulation.history is list
+          )
+        )
+        && (
+          data.rematchRequestedBy == null
+          || data.rematchRequestedBy in ['white', 'black']
+        )
+        && (data.rematchGameId == null || isValidId(data.rematchGameId))
+        && data.createdAt is string
+        && data.updatedAt is string
+        && (
+          data.whiteToken == null
+          || (data.whiteToken is string && data.whiteToken.size() <= 128)
+        )
+        && (
+          data.blackToken == null
+          || (data.blackToken is string && data.blackToken.size() <= 128)
+        );
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function isParticipant(data) {
+      return isAuthenticated()
+        && (
+          data.whiteToken == request.auth.uid
+          || data.blackToken == request.auth.uid
+        );
+    }
+
+    function hasStableIdentity(before, after) {
+      return after.id == before.id
+        && after.creatorColor == before.creatorColor
+        && after.whiteToken == before.whiteToken
+        && after.blackToken == before.blackToken
+        && after.createdAt == before.createdAt
+        && after.spectatorCount == before.spectatorCount;
+    }
+
+    function isJoiningVacantWhiteSeat() {
+      return resource.data.status == 'waiting'
+        && resource.data.whiteToken == null
+        && resource.data.blackToken != null
+        && request.resource.data.whiteToken == request.auth.uid
+        && request.resource.data.blackToken == resource.data.blackToken
+        && request.resource.data.white != null
+        && request.resource.data.black == resource.data.black
+        && request.resource.data.status == 'confirming'
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'white', 'whiteToken', 'status', 'version', 'updatedAt'
+        ]);
+    }
+
+    function isJoiningVacantBlackSeat() {
+      return resource.data.status == 'waiting'
+        && resource.data.blackToken == null
+        && resource.data.whiteToken != null
+        && request.resource.data.blackToken == request.auth.uid
+        && request.resource.data.whiteToken == resource.data.whiteToken
+        && request.resource.data.black != null
+        && request.resource.data.white == resource.data.white
+        && request.resource.data.status == 'confirming'
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'black', 'blackToken', 'status', 'version', 'updatedAt'
+        ]);
+    }
+
+    function isParticipantUpdate() {
+      return isParticipant(resource.data)
+        && hasStableIdentity(resource.data, request.resource.data)
+        && request.resource.data.version >= resource.data.version
+        && request.resource.data.version <= resource.data.version + 1
+        && (
+          resource.data.status != 'finished'
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'rematchRequestedBy', 'rematchGameId', 'annotations', 'simulation',
+            'version', 'updatedAt'
+          ])
+        );
+    }
+
+    function isInitialGame(data) {
+      return data.status == 'waiting'
+        && data.version == 1
+        && (
+          (
+            data.whiteToken == request.auth.uid
+            && data.white != null
+            && data.blackToken == null
+            && data.black == null
+          )
+          || (
+            data.blackToken == request.auth.uid
+            && data.black != null
+            && data.whiteToken == null
+            && data.white == null
+          )
+        );
+    }
+
+    function isRematchGame(data) {
+      return data.status == 'playing'
+        && data.version == 1
+        && data.whiteToken != null
+        && data.blackToken != null
+        && data.white.confirmed == true
+        && data.black.confirmed == true
+        && isParticipant(data);
     }
 
     function isValidUserProfile(data, userId) {
@@ -36,179 +214,50 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidPieceList(pieces) {
-      return pieces is list
-        && pieces.size() <= 40
-        && (pieces.size() == 0 || (pieces[0] is string && pieces[0].size() >= 4 && pieces[0].size() <= 10));
-    }
-
-    function isValidGameRecord(data, gameId) {
-      return data.keys().hasAll([
-          'id', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'whitePseudo', 'blackPseudo', 'status', 'turn',
-          'winner', 'version', 'pieces', 'createdAt', 'updatedAt'
-        ])
-        && data.keys().hasOnly([
-          'id', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'whitePseudo', 'blackPseudo', 'status', 'turn',
-          'winner', 'version', 'pieces', 'createdAt', 'updatedAt'
-        ])
-        && data.id is string && data.id == gameId && isValidId(data.id)
-        && data.ownerId is string && isValidId(data.ownerId)
-        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
-        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
-        && data.whitePseudo is string && data.whitePseudo.size() <= 40
-        && data.blackPseudo is string && data.blackPseudo.size() <= 40
-        && data.status in ['waiting', 'confirming', 'playing', 'finished']
-        && data.turn in ['white', 'black']
-        && data.winner in ['none', 'white', 'black', 'draw']
-        && data.version is int && data.version >= 0
-        && isValidPieceList(data.pieces)
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
-    }
-
-    function isGameParticipant(gameData) {
-      return isSignedIn() && (
-        gameData.ownerId == request.auth.uid
-        || gameData.whitePlayerUid == request.auth.uid
-        || gameData.blackPlayerUid == request.auth.uid
-      );
-    }
-
-    function isValidMoveRecord(data, gameId) {
-      return data.keys().hasAll([
-          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'ply', 'color', 'from', 'to', 'promoted', 'createdAt'
-        ])
-        && data.keys().hasOnly([
-          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'ply', 'color', 'from', 'to', 'promoted', 'createdAt'
-        ])
-        && data.gameId is string && data.gameId == gameId && isValidId(data.gameId)
-        && data.authorUid is string && data.authorUid == request.auth.uid && isValidId(data.authorUid)
-        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
-        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
-        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
-        && data.ply is int && data.ply >= 1
-        && data.color in ['white', 'black']
-        && data.from is string && data.from.size() >= 2 && data.from.size() <= 3 && data.from.matches('^[A-J](10|[1-9])$')
-        && data.to is string && data.to.size() >= 2 && data.to.size() <= 3 && data.to.matches('^[A-J](10|[1-9])$')
-        && data.promoted is bool
-        && data.createdAt is timestamp;
-    }
-
-    function isValidAnnotationRecord(data, gameId) {
-      return data.keys().hasAll([
-          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'noteText', 'updatedAt'
-        ])
-        && data.keys().hasOnly([
-          'gameId', 'authorUid', 'ownerId', 'whitePlayerUid', 'blackPlayerUid',
-          'noteText', 'updatedAt'
-        ])
-        && data.gameId is string && data.gameId == gameId && isValidId(data.gameId)
-        && data.authorUid is string && data.authorUid == request.auth.uid && isValidId(data.authorUid)
-        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
-        && data.whitePlayerUid is string && data.whitePlayerUid.size() <= 128
-        && data.blackPlayerUid is string && data.blackPlayerUid.size() <= 128
-        && data.noteText is string && data.noteText.size() <= 500
-        && data.updatedAt is timestamp;
+    match /{document=**} {
+      allow read, write: if false;
     }
 
     match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
+      allow get: if isValidId(userId)
+        && isVerifiedUser()
+        && request.auth.uid == userId;
       allow list: if false;
       allow create: if isValidId(userId)
-        && isOwner(userId)
-        && isValidUserProfile(incoming(), userId)
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && isVerifiedUser()
+        && request.auth.uid == userId
+        && isValidUserProfile(request.resource.data, userId)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
       allow update: if isValidId(userId)
-        && isOwner(userId)
-        && isValidUserProfile(incoming(), userId)
-        && incoming().diff(existing()).affectedKeys().hasOnly(['pseudo', 'updatedAt'])
-        && incoming().uid == existing().uid
-        && incoming().email == existing().email
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time;
+        && isVerifiedUser()
+        && request.auth.uid == userId
+        && isValidUserProfile(request.resource.data, userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pseudo', 'updatedAt'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
       allow delete: if false;
     }
 
     match /games/{gameId} {
-      allow get: if isValidId(gameId) && isGameParticipant(existing());
-      allow list: if isSignedIn() && isGameParticipant(existing());
-      allow create: if isValidId(gameId)
-        && isSignedIn()
-        && isValidGameRecord(incoming(), gameId)
-        && incoming().ownerId == request.auth.uid
-        && (incoming().whitePlayerUid == request.auth.uid || incoming().blackPlayerUid == request.auth.uid)
-        && incoming().status == 'waiting'
-        && incoming().winner == 'none'
-        && incoming().version == 0
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isValidId(gameId)
-        && isSignedIn()
-        && isValidGameRecord(incoming(), gameId)
-        && existing().status != 'finished'
-        && incoming().id == existing().id
-        && incoming().ownerId == existing().ownerId
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && incoming().version == existing().version + 1
+      allow get: if isAuthenticated() && isValidId(gameId);
+      allow list: if false;
+      allow create: if isAuthenticated()
+        && isValidGame(request.resource.data, gameId)
         && (
-          // Action 1: Rejoindre un siège vacant sans écraser un siège occupé
-          (
-            existing().status == 'waiting'
-            && incoming().diff(existing()).affectedKeys().hasOnly(['whitePlayerUid', 'blackPlayerUid', 'whitePseudo', 'blackPseudo', 'status', 'version', 'updatedAt'])
-            && (
-              (existing().whitePlayerUid == '' && incoming().whitePlayerUid == request.auth.uid && incoming().blackPlayerUid == existing().blackPlayerUid)
-              || (existing().blackPlayerUid == '' && incoming().blackPlayerUid == request.auth.uid && incoming().whitePlayerUid == existing().whitePlayerUid)
-            )
-          )
-          ||
-          // Action 2: Coup ou mise à jour d'état par un participant
-          (
-            isGameParticipant(existing())
-            && incoming().whitePlayerUid == existing().whitePlayerUid
-            && incoming().blackPlayerUid == existing().blackPlayerUid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'turn', 'winner', 'version', 'pieces', 'updatedAt'])
-          )
+          isInitialGame(request.resource.data)
+          || isRematchGame(request.resource.data)
+        );
+      allow update: if isAuthenticated()
+        && isValidGame(request.resource.data, gameId)
+        && (
+          isJoiningVacantWhiteSeat()
+          || isJoiningVacantBlackSeat()
+          || isParticipantUpdate()
         );
       allow delete: if false;
-
-      match /moves/{moveId} {
-        allow get: if isValidId(gameId) && isValidId(moveId)
-          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
-        allow list: if isGameParticipant(existing());
-        allow create: if isValidId(gameId) && isValidId(moveId)
-          && isSignedIn()
-          && isValidMoveRecord(incoming(), gameId)
-          && incoming().createdAt == request.time
-          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data)
-          && incoming().ownerId == get(/databases/$(database)/documents/games/$(gameId)).data.ownerId
-          && incoming().whitePlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.whitePlayerUid
-          && incoming().blackPlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.blackPlayerUid
-          && existsAfter(/databases/$(database)/documents/games/$(gameId));
-        allow update, delete: if false;
-      }
-
-      match /annotations/{annotationId} {
-        allow get: if isValidId(gameId) && isValidId(annotationId)
-          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
-        allow list: if isGameParticipant(existing());
-        allow create, update: if isValidId(gameId) && isValidId(annotationId)
-          && isSignedIn()
-          && isValidAnnotationRecord(incoming(), gameId)
-          && incoming().updatedAt == request.time
-          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data)
-          && incoming().ownerId == get(/databases/$(database)/documents/games/$(gameId)).data.ownerId
-          && incoming().whitePlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.whitePlayerUid
-          && incoming().blackPlayerUid == get(/databases/$(database)/documents/games/$(gameId)).data.blackPlayerUid;
-        allow delete: if isValidId(gameId) && isValidId(annotationId)
-          && isGameParticipant(get(/databases/$(database)/documents/games/$(gameId)).data);
-      }
     }
   }
 }

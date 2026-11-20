@@ -5,214 +5,48 @@
       "description": "Profil privé d'un joueur authentifié avec Google.",
       "type": "object",
       "properties": {
-        "uid": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "pseudo": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 40
-        },
-        "email": {
-          "type": "string",
-          "format": "email",
-          "maxLength": 160
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
+        "uid": { "type": "string" },
+        "pseudo": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "pseudo", "email", "createdAt", "updatedAt"]
     },
-    "GameRecord": {
-      "title": "GameRecord",
-      "description": "Partie de dames internationales persistée dans Firestore pour les joueurs authentifiés.",
+    "GameSession": {
+      "title": "GameSession",
+      "description": "Partie complète synchronisée par les clients authentifiés.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 4,
-          "maxLength": 64,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "creatorColor": { "type": "string", "enum": ["white", "black"] },
+        "status": { "type": "string", "enum": ["waiting", "confirming", "playing", "finished"] },
+        "version": { "type": "integer" },
+        "white": { "type": ["object", "null"] },
+        "black": { "type": ["object", "null"] },
+        "spectatorCount": { "type": "integer" },
+        "engine": { "type": "object" },
+        "moves": { "type": "array", "maxItems": 512 },
+        "annotations": { "type": "object" },
+        "simulation": { "type": ["object", "null"] },
+        "rematchRequestedBy": { "type": ["string", "null"] },
+        "rematchGameId": { "type": ["string", "null"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "whiteToken": {
+          "type": ["string", "null"],
+          "description": "Firebase Authentication UID for the white seat; not a secret."
         },
-        "ownerId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "whitePlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "blackPlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "whitePseudo": {
-          "type": "string",
-          "maxLength": 40
-        },
-        "blackPseudo": {
-          "type": "string",
-          "maxLength": 40
-        },
-        "status": {
-          "type": "string",
-          "enum": ["waiting", "confirming", "playing", "finished"]
-        },
-        "turn": {
-          "type": "string",
-          "enum": ["white", "black"]
-        },
-        "winner": {
-          "type": "string",
-          "enum": ["none", "white", "black", "draw"]
-        },
-        "version": {
-          "type": "integer"
-        },
-        "pieces": {
-          "type": "array",
-          "description": "Liste bornée des pièces actives (max 40) au format couleur:type:case."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
+        "blackToken": {
+          "type": ["string", "null"],
+          "description": "Firebase Authentication UID for the black seat; not a secret."
         }
       },
       "required": [
-        "id",
-        "ownerId",
-        "whitePlayerUid",
-        "blackPlayerUid",
-        "whitePseudo",
-        "blackPseudo",
-        "status",
-        "turn",
-        "winner",
-        "version",
-        "pieces",
-        "createdAt",
-        "updatedAt"
-      ]
-    },
-    "MoveRecord": {
-      "title": "MoveRecord",
-      "description": "Coup validé dans une partie de dames internationales.",
-      "type": "object",
-      "properties": {
-        "gameId": {
-          "type": "string",
-          "minLength": 4,
-          "maxLength": 64,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "authorUid": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "whitePlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "blackPlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "ply": {
-          "type": "integer"
-        },
-        "color": {
-          "type": "string",
-          "enum": ["white", "black"]
-        },
-        "from": {
-          "type": "string",
-          "minLength": 2,
-          "maxLength": 3,
-          "pattern": "^[A-J](10|[1-9])$"
-        },
-        "to": {
-          "type": "string",
-          "minLength": 2,
-          "maxLength": 3,
-          "pattern": "^[A-J](10|[1-9])$"
-        },
-        "promoted": {
-          "type": "boolean"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        }
-      },
-      "required": [
-        "gameId", "authorUid", "ownerId", "whitePlayerUid", "blackPlayerUid",
-        "ply", "color", "from", "to", "promoted", "createdAt"
-      ]
-    },
-    "AnnotationRecord": {
-      "title": "AnnotationRecord",
-      "description": "État pédagogique des annotations (surbrillances, flèches, cases colorées, texte).",
-      "type": "object",
-      "properties": {
-        "gameId": {
-          "type": "string",
-          "minLength": 4,
-          "maxLength": 64,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "authorUid": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "whitePlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "blackPlayerUid": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "noteText": {
-          "type": "string",
-          "maxLength": 500
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
-      },
-      "required": [
-        "gameId", "authorUid", "ownerId", "whitePlayerUid", "blackPlayerUid",
-        "noteText", "updatedAt"
+        "id", "creatorColor", "status", "version", "white", "black",
+        "spectatorCount", "engine", "moves", "annotations", "simulation",
+        "rematchRequestedBy", "rematchGameId", "createdAt", "updatedAt",
+        "whiteToken", "blackToken"
       ]
     }
   },
@@ -222,16 +56,8 @@
       "description": "Profil utilisateur privé protégé par propriété stricte."
     },
     "/games/{gameId}": {
-      "schema": { "$ref": "#/entities/GameRecord" },
-      "description": "Documents des parties sauvegardées et synchronisées."
-    },
-    "/games/{gameId}/moves/{moveId}": {
-      "schema": { "$ref": "#/entities/MoveRecord" },
-      "description": "Historique des coups rattaché à une partie."
-    },
-    "/games/{gameId}/annotations/{annotationId}": {
-      "schema": { "$ref": "#/entities/AnnotationRecord" },
-      "description": "Annotations pédagogiques synchronisées pour une partie."
+      "schema": { "$ref": "#/entities/GameSession" },
+      "description": "Parties créées et mises à jour par leurs joueurs authentifiés."
     }
   }
 }

@@ -1,6 +1,3 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   applyMove,
   cloneBoard,
@@ -25,6 +22,22 @@ export interface StoredGame extends GameSessionView {
   whiteToken: string | null;
   blackToken: string | null;
 }
+
+export type AnnotationAction =
+  | { type: 'toggle_highlight'; coord: Coord; color: AnnotationColor }
+  | { type: 'add_arrow'; points: Coord[]; color: AnnotationColor }
+  | { type: 'remove_arrow'; arrowId: string }
+  | { type: 'toggle_square'; coord: Coord; color: SquareMarkerColor }
+  | { type: 'add_note'; text: string }
+  | { type: 'clear' };
+
+export type SimulationAction =
+  | { type: 'start'; shared: boolean }
+  | { type: 'move'; from: Coord; to: Coord; path?: Coord[] }
+  | { type: 'undo' }
+  | { type: 'reset' }
+  | { type: 'stop' }
+  | { type: 'set_shared'; shared: boolean };
 
 function createEmptyAnnotations(): AnnotationsState {
   const now = new Date().toISOString();
@@ -58,56 +71,12 @@ function sanitizePseudo(raw: string): string {
 }
 
 function generateGameId(): string {
-  return crypto.randomBytes(4).toString('hex');
+  return globalThis.crypto.randomUUID().replaceAll('-', '');
 }
 
 export class GameStore {
   private games = new Map<string, StoredGame>();
   private spectators = new Map<string, Set<string>>();
-  private persistencePath: string | null;
-
-  constructor(persistencePath: string | null = path.resolve(process.cwd(), 'data', 'games.json')) {
-    this.persistencePath = persistencePath;
-    this.loadFromDisk();
-  }
-
-  private loadFromDisk(): void {
-    if (!this.persistencePath) return;
-    try {
-      if (fs.existsSync(this.persistencePath)) {
-        const raw = fs.readFileSync(this.persistencePath, 'utf8');
-        const parsed = JSON.parse(raw) as StoredGame[];
-        if (Array.isArray(parsed)) {
-          for (const g of parsed) {
-            if (g && typeof g.id === 'string') {
-              // On startup, mark sockets disconnected until clients reconnect
-              if (g.white) g.white.connected = false;
-              if (g.black) g.black.connected = false;
-              this.games.set(g.id, g);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Erreur chargement parties sur disque:', err);
-    }
-  }
-
-  private saveToDisk(): void {
-    if (!this.persistencePath) return;
-    try {
-      const dir = path.dirname(this.persistencePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      const list = Array.from(this.games.values());
-      const tmpPath = `${this.persistencePath}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(list), 'utf8');
-      fs.renameSync(tmpPath, this.persistencePath);
-    } catch (err) {
-      console.error('Erreur sauvegarde parties sur disque:', err);
-    }
-  }
 
   private toPublicView(game: StoredGame): GameSessionView {
     const spectatorSet = this.spectators.get(game.id);
@@ -178,7 +147,7 @@ export class GameStore {
     while (this.games.has(id)) {
       id = generateGameId();
     }
-    const token = crypto.randomUUID();
+    const token = globalThis.crypto.randomUUID();
     const now = new Date().toISOString();
 
     const creatorSeat: PlayerSeat = {
@@ -210,7 +179,6 @@ export class GameStore {
     };
 
     this.games.set(id, stored);
-    this.saveToDisk();
 
     return {
       ok: true,
@@ -231,7 +199,7 @@ export class GameStore {
     restored: boolean;
   } | {
     ok: false;
-    code: 'NOT_FOUND' | 'FULL' | 'INVALID_PSEUDO';
+    code: 'NOT_FOUND' | 'FULL' | 'FINISHED' | 'INVALID_PSEUDO';
     error: string;
     view?: GameSessionView;
   } {
@@ -248,7 +216,6 @@ export class GameStore {
         game.white.connected = true;
         game.white.lastSeenAt = now;
         game.updatedAt = now;
-        this.saveToDisk();
         return {
           ok: true,
           view: this.toPublicView(game),
@@ -260,7 +227,6 @@ export class GameStore {
         game.black.connected = true;
         game.black.lastSeenAt = now;
         game.updatedAt = now;
-        this.saveToDisk();
         return {
           ok: true,
           view: this.toPublicView(game),
@@ -278,6 +244,15 @@ export class GameStore {
         view: this.toPublicView(game),
         seat: { role: 'spectator', pseudo },
         restored: false,
+      };
+    }
+
+    if (game.status === 'finished') {
+      return {
+        ok: false,
+        code: 'FINISHED',
+        error: 'Cette partie est déjà terminée.',
+        view: this.toPublicView(game),
       };
     }
 
@@ -302,7 +277,7 @@ export class GameStore {
       };
     }
 
-    const token = crypto.randomUUID();
+    const token = globalThis.crypto.randomUUID();
     const seat: PlayerSeat = {
       pseudo,
       color: vacantColor,
@@ -324,7 +299,6 @@ export class GameStore {
     }
     game.version += 1;
     game.updatedAt = now;
-    this.saveToDisk();
 
     return {
       ok: true,
@@ -364,7 +338,6 @@ export class GameStore {
 
     game.version += 1;
     game.updatedAt = now;
-    this.saveToDisk();
     return { ok: true, view: this.toPublicView(game) };
   }
 
@@ -391,7 +364,6 @@ export class GameStore {
       game.black.connected = connected;
       game.black.lastSeenAt = now;
     }
-    this.saveToDisk();
     return this.toPublicView(game);
   }
 
@@ -471,7 +443,6 @@ export class GameStore {
     }
     game.version += 1;
     game.updatedAt = now;
-    this.saveToDisk();
 
     return { ok: true, view: this.toPublicView(game), move: record };
   }
@@ -494,7 +465,6 @@ export class GameStore {
     game.status = 'finished';
     game.version += 1;
     game.updatedAt = now;
-    this.saveToDisk();
 
     return { ok: true, view: this.toPublicView(game) };
   }
@@ -523,7 +493,6 @@ export class GameStore {
       game.rematchRequestedBy = role;
       game.version += 1;
       game.updatedAt = now;
-      this.saveToDisk();
       return { ok: true, view: this.toPublicView(game) };
     }
 
@@ -537,8 +506,8 @@ export class GameStore {
       newId = generateGameId();
     }
 
-    const newWhiteToken = game.blackToken ?? crypto.randomUUID();
-    const newBlackToken = game.whiteToken ?? crypto.randomUUID();
+    const newWhiteToken = game.blackToken ?? globalThis.crypto.randomUUID();
+    const newBlackToken = game.whiteToken ?? globalThis.crypto.randomUUID();
 
     const newGame: StoredGame = {
       id: newId,
@@ -568,7 +537,6 @@ export class GameStore {
     game.rematchGameId = newId;
     game.version += 1;
     game.updatedAt = now;
-    this.saveToDisk();
 
     return {
       ok: true,
@@ -583,13 +551,7 @@ export class GameStore {
   updateAnnotations(
     gameId: string,
     seatToken: string,
-    action:
-      | { type: 'toggle_highlight'; coord: Coord; color: AnnotationColor }
-      | { type: 'add_arrow'; points: Coord[]; color: AnnotationColor }
-      | { type: 'remove_arrow'; arrowId: string }
-      | { type: 'toggle_square'; coord: Coord; color: SquareMarkerColor }
-      | { type: 'add_note'; text: string }
-      | { type: 'clear' },
+    action: AnnotationAction,
   ): { ok: true; view: GameSessionView } | { ok: false; error: string } {
     const game = this.games.get(gameId);
     if (!game) return { ok: false, error: 'Partie introuvable.' };
@@ -616,7 +578,7 @@ export class GameStore {
       const validPoints = action.points.filter((p) => parseCoord(p) !== null).slice(0, 8);
       if (validPoints.length < 2) return { ok: false, error: 'Coordonnées de flèche invalides.' };
       game.annotations.arrows.push({
-        id: crypto.randomBytes(4).toString('hex'),
+        id: globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 8),
         points: validPoints,
         color: action.color,
       });
@@ -636,7 +598,7 @@ export class GameStore {
       const clean = String(action.text ?? '').trim().slice(0, 500);
       if (!clean) return { ok: false, error: 'Le message explicatif est vide.' };
       game.annotations.notes.push({
-        id: crypto.randomBytes(4).toString('hex'),
+        id: globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 8),
         authorPseudo: pseudo,
         authorRole: role,
         text: clean,
@@ -654,7 +616,6 @@ export class GameStore {
     game.annotations.updatedBy = pseudo;
     game.annotations.updatedAt = now;
     game.updatedAt = now;
-    this.saveToDisk();
 
     return { ok: true, view: this.toPublicView(game) };
   }
@@ -664,13 +625,7 @@ export class GameStore {
   updateSimulation(
     gameId: string,
     seatToken: string,
-    action:
-      | { type: 'start'; shared: boolean }
-      | { type: 'move'; from: Coord; to: Coord; path?: Coord[] }
-      | { type: 'undo' }
-      | { type: 'reset' }
-      | { type: 'stop' }
-      | { type: 'set_shared'; shared: boolean },
+    action: SimulationAction,
   ): { ok: true; view: GameSessionView } | { ok: false; error: string } {
     const game = this.games.get(gameId);
     if (!game) return { ok: false, error: 'Partie introuvable.' };
@@ -753,7 +708,6 @@ export class GameStore {
     }
 
     game.updatedAt = now;
-    this.saveToDisk();
     return { ok: true, view: this.toPublicView(game) };
   }
 }

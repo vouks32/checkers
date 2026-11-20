@@ -4,6 +4,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { GameRoom } from './components/GameRoom.tsx';
 import { HomeScreen } from './components/HomeScreen.tsx';
 import { RulesModal } from './components/RulesModal.tsx';
+import { createGame } from './gameApi.ts';
 import {
   auth,
   signInWithGoogle,
@@ -63,27 +64,22 @@ export default function App() {
       setCreating(true);
       setErrorMessage(null);
       try {
-        const res = await fetch('/api/games', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pseudo, color }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          setErrorMessage(data.error || 'Impossible de créer la partie.');
+        const result = await createGame({ pseudo, color });
+        if (!result.ok) {
+          setErrorMessage(result.error || 'Impossible de créer la partie.');
           return;
         }
         try {
           localStorage.setItem(
-            `dames_master_seat_${data.view.id}`,
-            JSON.stringify(data.seat),
+            `dames_master_seat_${result.view.id}`,
+            JSON.stringify(result.seat),
           );
         } catch {
           // Ignorer si stockage indisponible
         }
-        navigateToGame(data.view.id);
+        navigateToGame(result.view.id);
       } catch {
-        setErrorMessage('Erreur de connexion au serveur.');
+        setErrorMessage('Impossible de créer la partie. Vérifiez Firebase Authentication et les règles Firestore.');
       } finally {
         setCreating(false);
       }
@@ -138,7 +134,7 @@ export default function App() {
         />
       ) : (
         <HomeScreen
-          firebaseUser={firebaseUser}
+          firebaseUser={firebaseUser?.isAnonymous ? null : firebaseUser}
           onGoogleLogin={handleGoogleLogin}
           onGoogleLogout={handleGoogleLogout}
           onCreateGame={handleCreateGame}
